@@ -1,10 +1,11 @@
 import { TransactionBlock } from '@mysten/sui.js/transactions';
 import dotenv from 'dotenv';
-import { SUI_TYPE_ARG, SuiKit } from '@scallop-io/sui-kit';
-import { getFullnodeUrl } from '@mysten/sui.js/client';
+import { SUI_TYPE_ARG, SuiKit, SuiTxBlock } from '@scallop-io/sui-kit';
+import { CoinStruct, getFullnodeUrl } from '@mysten/sui.js/client';
 import fs from 'fs';
 import BigNumber from 'bignumber.js';
 import { UserCounter } from './type';
+import { isValidSuiAddress } from '@mysten/sui.js/src/utils';
 dotenv.config();
 
 const PACKAGE_ID = "0x30a644c3485ee9b604f52165668895092191fcaf5489a846afa7fc11cdb9b24a";
@@ -54,17 +55,22 @@ async function getCurrentEpoch(suiKit: SuiKit) {
 }
 
 async function spamSui(suiKit: SuiKit, accountIndex: number) {
-  const counterObj = await getCounterObject(suiKit, accountIndex);
+  const counterObjCurrent = await getCounterObject(suiKit, accountIndex, await getCurrentEpoch(suiKit));
+  const counterObjPrev = await getCounterObject(suiKit, accountIndex, await getCurrentEpoch(suiKit) - 1);
   const txb = new TransactionBlock();
-  logDetails(suiKit, accountIndex, counterObj, "Spam Sui");
   txb.setSender(suiKit.getAddress({ accountIndex }));
 
-  if (!counterObj) {
+  if (Number(counterObjPrev?.epoch) !== await getCurrentEpoch(suiKit) && counterObjPrev?.registered === false) {
+    logDetails(suiKit, accountIndex, counterObjPrev, "Spam Sui");
+    console.log("Register and create new counter");
+    await registerAndCreateCounter(suiKit, txb, accountIndex, counterObjPrev)
+  } else if (!counterObjCurrent) {
+    console.log("Create new counter");
     await createNewCounter(suiKit, txb, accountIndex);
-  } else if (Number(counterObj.epoch) !== await getCurrentEpoch(suiKit) && counterObj.registered === false) {
-    await registerAndCreateCounter(suiKit, txb, accountIndex, counterObj);
   } else {
-    await incrementCounter(suiKit, txb, accountIndex, counterObj);
+    console.log("Increment Counter");
+    logDetails(suiKit, accountIndex, counterObjCurrent, "Spam Sui");
+    await incrementCounter(suiKit, txb, accountIndex, counterObjCurrent);
   }
 }
 
@@ -98,9 +104,7 @@ async function registerAndCreateCounter(suiKit: SuiKit, txb: TransactionBlock, a
   });
   txb.moveCall({
     target: `${PACKAGE_ID}::${MODULE}::new_user_counter`,
-    arguments: [
-      txb.object(SPAM_SHARED_OBJECT_ID)
-    ],
+    arguments: [txb.object(SPAM_SHARED_OBJECT_ID)],
   });
   const data = await suiKit.signAndSendTxn(txb, { accountIndex });
   console.log("\x1b[32m-------------------------------------------------------------- \x1b[0m");
@@ -210,6 +214,31 @@ async function transferAllSpamToMain(address?: string) {
   }); 
 }
 
+async function deleteUserCounter() {
+  const suiKit = new SuiKit({
+    mnemonics: process.env.MNEMONICS,
+    networkType: 'mainnet',
+    fullnodeUrls: [rpcUrl],
+  });
+  const counterObj = await getCounterObject(suiKit, 2, await getCurrentEpoch(suiKit) - 2);
+  if (!counterObj) return;
+  const txb = new TransactionBlock();
+  txb.setSender(suiKit.getAddress({ accountIndex: 2 }));
+  txb.moveCall({
+    target: `${PACKAGE_ID}::${MODULE}::destroy_user_counter`,
+    arguments: [
+      txb.object(counterObj.id.id)
+    ],
+  });
+  const data = await suiKit.signAndSendTxn(
+    txb,
+    {
+      accountIndex: 2
+    }
+  );
+  console.log("Success destroy user counter: ", data.digest);
+}
+
 async function main() {
   const suiKit = new SuiKit({
     mnemonics: process.env.MNEMONICS,
@@ -233,3 +262,4 @@ main();
 
 // Uncomment this line to transfer all spam to main account
 // transferAllSpamToMain();
+// deleteUserCounter()
